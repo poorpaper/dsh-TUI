@@ -2756,8 +2756,9 @@ export function createChannel(
   /** One-shot context-low warning per session (CC's TokenWarning). */
   let contextWarned = false
   const checkContextWarning = (): void => {
-    if (contextWarned || state.contextWindow === undefined) return
-    const remaining = state.contextWindow - state.tokens.input
+    if (replaying || contextWarned || state.contextWindow === undefined || state.lastUsage === undefined) return
+    const used = state.lastUsage.input + state.lastUsage.cacheRead + state.lastUsage.cacheWrite
+    const remaining = state.contextWindow - used
     if (remaining >= CONTEXT_WARNING_BUFFER_TOKENS) return
     contextWarned = true
     const percentLeft = Math.max(
@@ -3250,6 +3251,7 @@ export function createChannel(
           provider: string,
           model: string,
         ): Promise<{
+          context?: { contextWindow: number }
           reasoning?: {
             efforts: ReadonlyArray<{ id: string; name: string; description?: string }>
             defaultEffort?: string
@@ -3288,10 +3290,9 @@ export function createChannel(
     }
   }
 
-  /** Best-effort refresh of the live route's effort-level table for
-   *  top-tier-triggered UI (effort ignition): fire-and-forget on route
-   *  changes (bind/model switch/resume); the /effort paths refresh it
-   *  authoritatively via resolveEfforts. */
+  /** Best-effort refresh of live route metadata used by context warnings and
+   *  top-tier-triggered UI (effort ignition): fire-and-forget on route changes
+   *  (bind/model switch/resume). */
   let effortLevelsGeneration = 0
   const refreshEffortLevels = (): void => {
     if (llmRuntime === undefined || typeof llmRuntime.resolveModelInfo !== 'function') return
@@ -3304,6 +3305,10 @@ export function createChannel(
       .then(info => {
         if (generation !== effortLevelsGeneration) return
         state.effortLevels = (info.reasoning?.efforts ?? []).map(level => level.id)
+        if (info.context !== undefined) {
+          state.contextWindow = info.context.contextWindow
+          checkContextWarning()
+        }
         state.emit()
       })
       .catch(() => {
