@@ -1,6 +1,6 @@
 /**
- * Regression for #770: /resume must not warn from replayed totals or a
- * historical context window. Run against the compiled channel implementation.
+ * Regression for #770: /resume must not raise live warnings from replayed
+ * totals, historical windows, or failed turns. Run against the compiled channel.
  */
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -67,6 +67,19 @@ const historicalEvents = [
     data: { turn: 2, step: 1, message: { role: 'assistant', content: [] }, usage },
   },
   { type: 'turn/end', seq: 7, time: 7, data: { turn: 2, reason: { kind: 'completed' } } },
+  { type: 'turn/start', seq: 8, time: 8, data: { turn: 3 } },
+  {
+    type: 'turn/end',
+    seq: 9,
+    time: 9,
+    data: {
+      turn: 3,
+      reason: {
+        kind: 'error',
+        error: { name: 'Error', message: 'historical provider failure' },
+      },
+    },
+  },
 ]
 
 const liveModelInfo = {
@@ -95,6 +108,14 @@ const channel = createChannel(ctx, makeAgent('current-agent', 'current-session')
 const hasLowWarning = () => channel.notifications.some(item =>
   /Context low|上下文即将耗尽/u.test(item.text),
 )
+const hasTurnError = detail => channel.notifications.some(item =>
+  item.color === 'error' &&
+  /Turn error|回合出错/u.test(item.text) &&
+  item.text.includes(detail),
+)
+const hasErrorRow = detail => channel.rows.some(row =>
+  row.kind === 'notice' && row.text.includes(detail),
+)
 
 delayMetadata = true
 const result = await channel.resumeTo(target.session.id)
@@ -102,6 +123,12 @@ check('/resume succeeds', result.ok === true, JSON.stringify(result))
 check('replay restores cumulative billing totals', channel.tokens.input === 140_000, String(channel.tokens.input))
 check('replay keeps the latest request usage', channel.lastUsage?.input === 70_000, JSON.stringify(channel.lastUsage))
 check('replay does not emit a stale warning', !hasLowWarning(), JSON.stringify(channel.notifications))
+check('replay keeps historical turn failure in the transcript', hasErrorRow('historical provider failure'))
+check(
+  'replay does not re-notify a historical turn failure',
+  !hasTurnError('historical provider failure'),
+  JSON.stringify(channel.notifications),
+)
 check('resume requested current route metadata', typeof resolveResumeInfo === 'function')
 
 resolveResumeInfo?.(liveModelInfo)
@@ -118,14 +145,28 @@ const emit = (type, data) => {
   ctx.emit('session/event', target.session, event)
 }
 emit('request/context', { contextWindow: 80_000 })
-emit('turn/start', { turn: 3 })
+emit('turn/start', { turn: 4 })
 emit('assistant/message', {
-  turn: 3,
+  turn: 4,
   step: 1,
   message: { role: 'assistant', content: [] },
   usage,
 })
-emit('turn/end', { turn: 3, reason: { kind: 'completed' } })
+emit('turn/end', { turn: 4, reason: { kind: 'completed' } })
 check('a genuinely low live context still warns', hasLowWarning(), JSON.stringify(channel.notifications))
+
+emit('turn/start', { turn: 5 })
+emit('turn/end', {
+  turn: 5,
+  reason: {
+    kind: 'error',
+    error: { name: 'Error', message: 'live provider failure' },
+  },
+})
+check(
+  'a live turn failure still notifies',
+  hasTurnError('live provider failure'),
+  JSON.stringify(channel.notifications),
+)
 
 process.exit(failed)

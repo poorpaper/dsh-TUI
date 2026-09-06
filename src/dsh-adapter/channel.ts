@@ -9145,7 +9145,7 @@ ${output}
         const detail = reason.kind === 'error' ? cleanRenderText(reason.error.message, NOTICE_CELLS) : ''
         state.rows.push({ id: nextRowId, kind: 'notice', text: `turn ${reason.kind}${detail ? ` · ${detail}` : ''}` })
         nextRowId += 1
-        state.notify(
+        if (!replaying) state.notify(
           t('turn-failed', { detail: detail ? ` · ${detail}` : '' }),
           { color: 'error', timeoutMs: 8000 },
         )
